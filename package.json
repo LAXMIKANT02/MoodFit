@@ -14,6 +14,9 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@mediapipe/camera_utils": "^0.3.1675466862",
+    "@mediapipe/drawing_utils": "^0.3.1675466124",
+    "@mediapipe/pose": "^0.5.1675469404",
     "@supabase/supabase-js": "^2.57.4",
     "@types/react-router-dom": "^5.3.3",
     "lucide-react": "^0.344.0",

@@ -46,4 +46,4 @@ const EmotionDetection: React.FC = () => {
   );
 };
 
-export default EmotionDetection; 
+export default EmotionDetection;

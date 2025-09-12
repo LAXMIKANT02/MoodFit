@@ -11,29 +11,29 @@ const FitnessDetection: React.FC = () => {
             className="inline-flex items-center text-blue-600 hover:text-blue-800 mb-4 transition-colors"
           >
           </Link>
-          <h1 className="text-3xl font-bold text-gray-900">Fitness Detection</h1>
-          <p className="text-gray-600 mt-2">AI-powered fitness tracking and workout monitoring</p>
+          <h1 className="text-3xl font-bold text-gray-900"> Fitness Detection </h1>
+          <p className="text-gray-600 mt-2">AI-powered emotion tracking and mood analysis</p>
         </div>
 
         <div className="bg-white rounded-xl shadow-lg p-8">
           <div className="text-center">
-            <div className="text-6xl mb-6">🏋️</div>
+            <div className="text-6xl mb-6">💪</div>
             <h2 className="text-2xl font-semibold text-gray-900 mb-4">
-              Fitness Detection Active
+              Fitness Detection
             </h2>
-            <div className="bg-blue-50 border-2 border-blue-200 rounded-lg p-12 min-h-[400px] flex items-center justify-center border-dashed">
+            <div className="bg-blue-50 border-2 border-purple-200 rounded-lg p-12 min-h-[400px] flex items-center justify-center border-dashed">
               <div className="text-center">
-                <p className="text-lg text-blue-600 font-medium mb-2">
+                <p className="text-lg text-purple-600 font-medium mb-2">
                   [ Fitness Detection Camera Feed ]
                 </p>
                 <p className="text-sm text-gray-500">
-                  AI will analyze your workout form, count reps, and provide real-time feedback
+                  AI will analyze your facial expressions and provide mood insights
                 </p>
               </div>
             </div>
             <div className="mt-6 flex justify-center space-x-4">
               <button className="px-6 py-3 bg-green-600 text-white rounded-lg hover:bg-green-700 transition-colors font-medium">
-                Start Workout
+                Start Tracking
               </button>
               <button className="px-6 py-3 bg-gray-600 text-white rounded-lg hover:bg-gray-700 transition-colors font-medium">
                 Stop Detection
@@ -46,4 +46,4 @@ const FitnessDetection: React.FC = () => {
   );
 };
 
-export default FitnessDetection; 
+export default FitnessDetection;
