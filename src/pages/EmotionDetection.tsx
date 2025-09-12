@@ -1,6 +1,5 @@
 import React from 'react';
 import { Link } from 'react-router-dom';
-import { ArrowLeft } from 'lucide-react';
 
 const EmotionDetection: React.FC = () => {
   return (
@@ -11,8 +10,6 @@ const EmotionDetection: React.FC = () => {
             to="/dashboard" 
             className="inline-flex items-center text-blue-600 hover:text-blue-800 mb-4 transition-colors"
           >
-            <ArrowLeft className="w-4 h-4 mr-2" />
-            Back to Dashboard
           </Link>
           <h1 className="text-3xl font-bold text-gray-900">Emotion Detection</h1>
           <p className="text-gray-600 mt-2">AI-powered emotion tracking and mood analysis</p>
