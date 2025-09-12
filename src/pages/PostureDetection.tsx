@@ -49,4 +49,4 @@ const PostureDetection: React.FC = () => {
   );
 };
 
-export default PostureDetection; 
+export default PostureDetection;
