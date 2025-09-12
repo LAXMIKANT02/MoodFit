@@ -1,4 +1,5 @@
 import React from 'react';
+import { Link } from 'react-router-dom';
 
 const Dashboard: React.FC = () => {
   const dashboardCards = [
@@ -7,18 +8,21 @@ const Dashboard: React.FC = () => {
       placeholder: '[ Fitness Detection Placeholder ]',
       bgColor: 'bg-blue-50',
       borderColor: 'border-blue-200',
+      route: '/fitness-detection',
     },
     {
       title: 'Posture Detection',
       placeholder: '[ Posture Camera Feed Placeholder ]',
       bgColor: 'bg-green-50',
       borderColor: 'border-green-200',
+      route: '/posture-detection',
     },
     {
       title: 'Emotion Tracking',
       placeholder: '[ Emotion Detection Placeholder ]',
       bgColor: 'bg-purple-50',
       borderColor: 'border-purple-200',
+      route: '/emotion-detection',
     },
   ];
 
@@ -43,6 +47,17 @@ const Dashboard: React.FC = () => {
                 <p className="text-gray-500 font-medium text-center">
                   {card.placeholder}
                 </p>
+              </div>
+              <div className="mt-4 text-center">
+                <Link
+                  to={card.route}
+                  className="inline-flex items-center px-6 py-3 bg-blue-600 text-white font-medium rounded-lg hover:bg-blue-700 transform hover:scale-105 transition-all duration-200 shadow-md hover:shadow-lg"
+                >
+                  Start
+                  <svg className="ml-2 w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7l5 5m0 0l-5 5m5-5H6" />
+                  </svg>
+                </Link>
               </div>
             </div>
           ))}
