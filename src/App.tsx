@@ -1,10 +1,10 @@
 import React from 'react';
 import { BrowserRouter as Router, Routes, Route } from 'react-router-dom';
 import Layout from './components/Layout';
-import Home from './src/pages/Home';
-import Dashboard from './src/pages/Dashboard';
-import Logs from './src/pages/Logs';
-import Settings from './src/pages/Settings';
+import Home from './pages/Home';
+import Dashboard from './pages/Dashboard';
+import Logs from './pages/Logs';
+import Settings from './pages/Settings';
 
 function App() {
   return (
