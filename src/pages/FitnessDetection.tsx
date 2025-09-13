@@ -392,7 +392,6 @@ export default function FitnessDetection(): JSX.Element {
       <div className="max-w-4xl mx-auto">
         <div className="mb-6 flex items-center justify-between">
           <div>
-            <Link to="/dashboard" className="inline-flex items-center text-blue-600 hover:text-blue-800 mb-2 transition-colors">← Back to Dashboard</Link>
             <h1 className="text-3xl font-bold text-gray-900">Fitness</h1>
             <p className="text-gray-600 mt-1">Choose Exercise or Yoga — track reps or hold poses</p>
           </div>
