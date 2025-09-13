@@ -4,7 +4,7 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Pose, POSE_CONNECTIONS } from "@mediapipe/pose";
 import { Camera } from "@mediapipe/camera_utils";
 import { drawConnectors, drawLandmarks } from "@mediapipe/drawing_utils";
-import { saveSessionSummary } from "../utils/sessionStorage";
+import { saveSessionSummary, saveFullSession } from "../utils/sessionStorage";
 import MusicPlayer, { MusicPlayerHandle } from "../components/MusicPlayer";
 
 function uid() {
@@ -13,14 +13,15 @@ function uid() {
 
 type FrameRecord = { t: number; landmarks: any[] };
 
-/**
- * DEMO_MAP:
- * - Preferred: full YouTube URLs (or "https://www.youtube.com/watch?v=VIDEO_ID")
- * - Fallback: local files you put under public/videos/<mode>/<exercise>_demo.mp4
- *
- * Replace the VIDEO_ID placeholders below with real YouTube IDs (or full URLs)
- * Or leave blank and add local files in public/videos/...
- */
+/* -------------------------
+   Safety / performance constants
+   ------------------------- */
+const MAX_IN_MEMORY_FRAMES = 2000; // preview buffer cap
+const SAVE_DOWNSAMPLE_FACTOR = 1; // set >1 to downsample frames before saving to localStorage
+
+/* -------------------------
+   DEMO map (YouTube or local fallback)
+   ------------------------- */
 const DEMO_MAP: Record<string, Record<string, string | undefined>> = {
   exercise: {
     squat: "https://www.youtube.com/watch?v=aclHkVaku9U",
@@ -32,14 +33,13 @@ const DEMO_MAP: Record<string, Record<string, string | undefined>> = {
     deadlift: "https://www.youtube.com/watch?v=op9kVnSso6Q",
   },
   yoga: {
-    // high-quality yoga demo links (YouTube)
-    tree: "https://www.youtube.com/watch?v=yVE4XXFFO70",       // Tree Pose - Yoga With Adriene
-    warrior2: "https://www.youtube.com/watch?v=4Ejz7IgODlU",   // Warrior II - Yoga With Adriene
-    downward_dog: "https://www.youtube.com/watch?v=j97SSGsnCAQ",// Downward Dog - Yoga With Adriene
-    child_pose: "https://www.youtube.com/watch?v=eqVMAPM00DM", // Child's Pose - Yoga With Adriene (Extended)
-    cobra: "https://www.youtube.com/watch?v=jwoTJNgh8BY",      // Cobra Pose tutorial
-    bridge: "https://www.youtube.com/watch?v=NnbvPeAIhmA",     // Bridge Pose - Yoga With Adriene
-    seated_forward_fold: "https://www.youtube.com/watch?v=3qHXmRDN-ig", // Seated Forward Fold / Basics
+    tree: "https://www.youtube.com/watch?v=yVE4XXFFO70",
+    warrior2: "https://www.youtube.com/watch?v=4Ejz7IgODlU",
+    downward_dog: "https://www.youtube.com/watch?v=j97SSGsnCAQ",
+    child_pose: "https://www.youtube.com/watch?v=eqVMAPM00DM",
+    cobra: "https://www.youtube.com/watch?v=jwoTJNgh8BY",
+    bridge: "https://www.youtube.com/watch?v=NnbvPeAIhmA",
+    seated_forward_fold: "https://www.youtube.com/watch?v=3qHXmRDN-ig",
   },
 };
 
@@ -51,17 +51,12 @@ export default function SessionRecorder() {
   const mode = params.mode || "exercise";
   const exercise = params.exercise || "squat";
 
-  // demoUrl resolution:
-  // 1) If DEMO_MAP contains a valid string -> use that (expect YouTube/full URL)
-  // 2) Else fallback to local file path: /videos/<mode>/<exercise>_demo.mp4
   const demoCandidate = DEMO_MAP[mode] && DEMO_MAP[mode][exercise];
   const demoUrl = typeof demoCandidate === "string" && demoCandidate.length > 0
     ? demoCandidate
     : `/videos/${mode}/${exercise}_demo.mp4`;
-
   const isRemoteDemo = typeof demoUrl === "string" && demoUrl.startsWith("http");
 
-  // reading ?music=true
   const musicEnabled = searchParams.get("music") === "true";
 
   const videoDemoRef = useRef<HTMLVideoElement | null>(null);
@@ -70,25 +65,30 @@ export default function SessionRecorder() {
   const poseRef = useRef<Pose | null>(null);
   const cameraRef = useRef<Camera | null>(null);
 
+  // guard to prevent concurrent camera starts
+  const isStartingCamera = useRef(false);
+
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
-  const [recording, setRecording] = useState(false);
-  const [frames, setFrames] = useState<FrameRecord[]>([]);
+
+  // preview buffer (bounded)
   const framesRef = useRef<FrameRecord[]>([]);
+  // full buffer (to save/download) - may be large
+  const framesFullRef = useRef<FrameRecord[]>([]);
+
+  const [recording, setRecording] = useState(false);
+  const [framesPreview, setFramesPreview] = useState<FrameRecord[]>([]);
+  // NOTE: use epoch ms for startTs so new Date(startTs) is correct in Logs
   const [startTs, setStartTs] = useState<number | null>(null);
   const [status, setStatus] = useState("Ready");
   const [downloadVideoUrl, setDownloadVideoUrl] = useState<string | null>(null);
   const [downloadJsonUrl, setDownloadJsonUrl] = useState<string | null>(null);
 
-  // canvas size state to mirror demo
   const [canvasSize, setCanvasSize] = useState({ width: 640, height: 480 });
-
-  // demo load failure state (if local file missing or remote blocked)
   const [demoFailed, setDemoFailed] = useState(false);
-  // reset demoFailed when demoUrl changes
   useEffect(() => setDemoFailed(false), [demoUrl]);
 
-  // music player ref + playlist defaults (local paths)
+  // music player defaults
   const musicRef = useRef<MusicPlayerHandle | null>(null);
   const exercisePlaylist = [
     `/music/exercise/track1.mp3`,
@@ -100,7 +100,6 @@ export default function SessionRecorder() {
   ];
   const playlist = mode === "yoga" ? yogaPlaylist : exercisePlaylist;
 
-  // update canvas size from actual video
   function updateCanvasSizeFromVideo() {
     const v = videoRef.current;
     const c = canvasRef.current;
@@ -112,7 +111,85 @@ export default function SessionRecorder() {
     setCanvasSize({ width: w, height: h });
   }
 
+  // stop camera and release tracks
+  async function stopCamera() {
+    try {
+      if (cameraRef.current) {
+        try { cameraRef.current.stop(); } catch (_) {}
+        cameraRef.current = null;
+      }
+    } catch (_) {}
+    try {
+      const v = videoRef.current;
+      if (v && v.srcObject) {
+        const s = v.srcObject as MediaStream;
+        s.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+        try { v.srcObject = null; } catch (_) {}
+      }
+    } catch (_) {}
+  }
+
+  // robust startCamera: stops previous stream, handles play() AbortError races
+  async function startCamera() {
+    if (isStartingCamera.current) return;
+    isStartingCamera.current = true;
+    setStatus("Requesting camera...");
+    if (!videoRef.current || !canvasRef.current) {
+      isStartingCamera.current = false;
+      return;
+    }
+
+    try {
+      // stop any existing
+      await stopCamera();
+      await new Promise((r) => setTimeout(r, 50)); // tiny yield for browser to release
+
+      const constraints = { video: { width: 640, height: 480 }, audio: false };
+      const stream = await navigator.mediaDevices.getUserMedia(constraints);
+
+      if (!videoRef.current) {
+        stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
+        isStartingCamera.current = false;
+        return;
+      }
+
+      videoRef.current.srcObject = stream;
+      videoRef.current.muted = true;
+      videoRef.current.playsInline = true;
+
+      try {
+        await videoRef.current.play();
+      } catch (err: any) {
+        // benign race - play was interrupted by another load — ignore
+        if (err && err.name === "AbortError") {
+          console.warn("[camera] play() interrupted (ignored)", err);
+        } else {
+          throw err;
+        }
+      }
+
+      updateCanvasSizeFromVideo();
+
+      // start mediapipe camera helper
+      cameraRef.current = new Camera(videoRef.current, {
+        onFrame: async () => {
+          if (poseRef.current && videoRef.current) await poseRef.current.send({ image: videoRef.current! });
+        },
+        width: canvasSize.width,
+        height: canvasSize.height,
+      });
+      cameraRef.current.start();
+      setStatus("Camera ready");
+    } catch (err) {
+      console.error("Camera error", err);
+      setStatus("Camera permission denied or error");
+    } finally {
+      isStartingCamera.current = false;
+    }
+  }
+
   useEffect(() => {
+    // initialize MediaPipe Pose once
     if (!poseRef.current) {
       poseRef.current = new Pose({
         locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
@@ -140,69 +217,56 @@ export default function SessionRecorder() {
         try {
           drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { color: "#00FF00", lineWidth: 2 });
           drawLandmarks(ctx, results.poseLandmarks, { color: "#FF0000", lineWidth: 1 });
-        } catch (e) {}
+        } catch (e) { /* ignore drawing errors */ }
+
         if (recording && startTs) {
-          const now = performance.now();
-          framesRef.current.push({ t: now - startTs, landmarks: results.poseLandmarks });
+          // use wall-clock relative ms (Date.now() - startTs) so saved startTs is correct time
+          const now = Date.now();
+          const rec: FrameRecord = { t: now - startTs, landmarks: results.poseLandmarks };
+
+          framesFullRef.current.push(rec);
+
+          // preview buffer bounded for UI performance
+          framesRef.current.push(rec);
+          if (framesRef.current.length > MAX_IN_MEMORY_FRAMES) {
+            framesRef.current.splice(0, framesRef.current.length - MAX_IN_MEMORY_FRAMES);
+          }
         }
       }
     });
 
     return () => {
-      try { (poseRef.current as any)?.close?.(); } catch {}
+      try { (poseRef.current as any)?.close?.(); } catch (_) {}
       poseRef.current = null;
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recording, startTs]);
 
-  async function startCamera() {
-    setStatus("Requesting camera...");
-    if (!videoRef.current || !canvasRef.current) return;
-    try {
-      const s = await navigator.mediaDevices.getUserMedia({ video: { width: 640, height: 480 }, audio: false });
-      videoRef.current.srcObject = s;
-      videoRef.current.muted = true;
-      videoRef.current.playsInline = true;
-      await videoRef.current.play();
-
-      updateCanvasSizeFromVideo();
-
-      cameraRef.current = new Camera(videoRef.current, {
-        onFrame: async () => {
-          if (poseRef.current && videoRef.current) await poseRef.current.send({ image: videoRef.current! });
-        },
-        width: canvasSize.width,
-        height: canvasSize.height,
-      });
-      cameraRef.current.start();
-      setStatus("Camera ready");
-    } catch (err) {
-      console.error("Camera error", err);
-      setStatus("Camera permission denied or error");
-    }
-  }
-
   useEffect(() => {
     // auto-start camera on mount
     startCamera();
     return () => {
-      try { cameraRef.current?.stop(); } catch {}
-      cameraRef.current = null;
+      try { stopCamera(); } catch (_) {}
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   function startRecording() {
     if (!canvasRef.current) return;
+
+    // reset buffers
     framesRef.current = [];
-    setFrames([]);
+    framesFullRef.current = [];
+    setFramesPreview([]);
     setStatus("Recording...");
     setRecording(true);
-    const start = performance.now();
+
+    // set startTs as epoch ms (so toLocaleString shows correct wall time)
+    const start = Date.now();
     setStartTs(start);
 
     const stream = (canvasRef.current as HTMLCanvasElement).captureStream(30);
-    let options = { mimeType: "video/webm;codecs=vp9" } as any;
+    let options: any = { mimeType: "video/webm;codecs=vp9" };
     if (!MediaRecorder.isTypeSupported(options.mimeType)) {
       options = { mimeType: "video/webm;codecs=vp8" };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: "video/webm" };
@@ -211,47 +275,98 @@ export default function SessionRecorder() {
     const mr = new MediaRecorder(stream, options);
     chunksRef.current = [];
     mr.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunksRef.current.push(ev.data); };
+
     mr.onstop = () => {
       const blob = new Blob(chunksRef.current, { type: "video/webm" });
-      const url = URL.createObjectURL(blob);
-      setDownloadVideoUrl(url);
+      const videoUrl = URL.createObjectURL(blob);
+      setDownloadVideoUrl(videoUrl);
+
+      // prepare frames to save (downsample if desired)
+      const fullFrames = framesFullRef.current || [];
+      let framesToSave = fullFrames;
+      if (SAVE_DOWNSAMPLE_FACTOR > 1 && fullFrames.length > 0) {
+        framesToSave = fullFrames.filter((_, i) => i % SAVE_DOWNSAMPLE_FACTOR === 0);
+      }
+
+      const normalizedExercise = (exercise || "").toLowerCase().trim();
 
       const session = {
         id: uid(),
-        mode, exercise, startTs,
-        endTs: performance.now(),
-        durationMs: Math.round(performance.now() - (startTs || performance.now())),
-        frames: framesRef.current,
+        mode,
+        exercise: normalizedExercise,
+        startTs,
+        endTs: Date.now(),
+        durationMs: Math.round((Date.now()) - (startTs || Date.now())),
+        frames: framesToSave,
       };
 
-      const jsonBlob = new Blob([JSON.stringify(session)], { type: "application/json" });
-      const jsonUrl = URL.createObjectURL(jsonBlob);
-      setDownloadJsonUrl(jsonUrl);
+      // try to save full session to localStorage; fallback to download if fails
+      let savedToLocalStorage = false;
+      try {
+        saveFullSession(session);
+        savedToLocalStorage = true;
+        console.debug("[recorder] saveFullSession succeeded", session.id, "framesSaved:", framesToSave.length);
+      } catch (err) {
+        console.warn("[recorder] saveFullSession failed (localStorage?), falling back to JSON download. error:", err);
+      }
 
-      saveSessionSummary({
-        id: session.id,
-        mode: session.mode,
-        exercise: session.exercise,
-        startTs: session.startTs,
-        endTs: session.endTs,
-        durationMs: session.durationMs,
-        reps: 0,
-        notes: musicEnabled ? "Recorded with music" : "Recorded without music",
-        videoUrl: url,
-        meta: {},
-      });
+      // always prepare downloadable JSON (useful even if saved)
+      try {
+        const jsonBlob = new Blob([JSON.stringify(session)], { type: "application/json" });
+        const jsonUrl = URL.createObjectURL(jsonBlob);
+        setDownloadJsonUrl(jsonUrl);
+      } catch (err) {
+        console.error("[recorder] building session JSON failed:", err);
+      }
+
+      // fallback: if localStorage saving failed, auto-trigger JSON download so user doesn't lose data
+      if (!savedToLocalStorage) {
+        try {
+          const a = document.createElement("a");
+          a.href = URL.createObjectURL(new Blob([JSON.stringify(session)], { type: "application/json" }));
+          a.download = `${normalizedExercise || "session"}_${session.id}_landmarks.json`;
+          document.body.appendChild(a);
+          a.click();
+          a.remove();
+          console.warn("[recorder] localStorage unavailable — attempted automatic download of session JSON.");
+        } catch (err) {
+          console.error("[recorder] fallback download failed:", err);
+        }
+      }
+
+      // always save a lightweight summary used by Logs
+      try {
+        saveSessionSummary({
+          id: session.id,
+          mode: session.mode as "exercise" | "yoga",
+          exercise: session.exercise,
+          startTs: session.startTs ?? 0,
+          endTs: session.endTs,
+          durationMs: session.durationMs,
+          reps: 0,
+          notes: musicEnabled ? "Recorded with music" : "Recorded without music",
+          videoUrl,
+          meta: { savedToLocalStorage },
+        });
+      } catch (err) {
+        console.warn("[recorder] saveSessionSummary failed:", err);
+      }
 
       setStatus("Recording saved locally (download ready)");
       setRecording(false);
-      setFrames(framesRef.current.slice(0, 500));
+
+      // update UI preview with bounded frames
+      setFramesPreview(framesRef.current.slice(0, 500));
+
+      console.debug("[recorder] onstop complete — session id:", session.id, "framesToSave:", framesToSave.length);
     };
 
     mr.start();
     recorderRef.current = mr;
-    // if music is enabled and player exists, we do not auto-play but we can attempt to start it:
+
+    // optionally attempt to autoplay music (may be blocked by browser)
     if (musicEnabled && musicRef.current && !musicRef.current.isPlaying()) {
-      // try to start music (may be blocked by autoplay policies)
-      musicRef.current.play();
+      try { musicRef.current.play(); } catch (_) {}
     }
   }
 
@@ -270,7 +385,6 @@ export default function SessionRecorder() {
     a.remove();
   }
 
-  // convert youtube watch/short url to embed
   function getEmbedSrc(u: string) {
     if (!u) return "";
     if (u.includes("youtube.com/watch")) return u.replace("watch?v=", "embed/");
@@ -278,10 +392,8 @@ export default function SessionRecorder() {
     return u;
   }
 
-  // show placeholder when demo missing or video failed to load
   const renderDemoArea = () => {
     if (isRemoteDemo) {
-      // show remote iframe; if user provided a placeholder "VIDEO_ID" it will still render iframe (YouTube will show error)
       return (
         <iframe
           src={getEmbedSrc(demoUrl)}
@@ -293,7 +405,6 @@ export default function SessionRecorder() {
       );
     }
 
-    // local-file path case: try to render <video> but gracefully detect onError
     return demoFailed ? (
       <div className="w-full h-full flex items-center justify-center text-center p-6">
         <div>
@@ -308,13 +419,21 @@ export default function SessionRecorder() {
         controls
         className="w-full h-full object-cover"
         style={{ width: canvasSize.width, height: canvasSize.height, maxWidth: "100%" }}
-        onError={() => {
-          // local file missing or failed to load — show friendly placeholder
-          setDemoFailed(true);
-        }}
+        onError={() => setDemoFailed(true)}
       />
     );
   };
+
+  // cleanup object URLs on unmount to avoid leaking memory
+  useEffect(() => {
+    return () => {
+      try {
+        if (downloadVideoUrl) URL.revokeObjectURL(downloadVideoUrl);
+        if (downloadJsonUrl) URL.revokeObjectURL(downloadJsonUrl);
+      } catch (_) {}
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   return (
     <div className="p-6">
@@ -335,6 +454,9 @@ export default function SessionRecorder() {
           <div className="relative bg-black rounded overflow-hidden" style={{ width: canvasSize.width, height: canvasSize.height, maxWidth: "100%" }}>
             <video ref={videoRef} className="hidden" playsInline />
             <canvas ref={canvasRef} className="rounded-lg shadow" style={{ width: "100%", height: "100%" }} />
+            <div className="absolute top-2 left-2 bg-black bg-opacity-40 text-white text-xs px-2 py-1 rounded">
+              Frames (preview): {framesRef.current.length}
+            </div>
           </div>
 
           {musicEnabled && (
@@ -351,9 +473,9 @@ export default function SessionRecorder() {
             ) : (
               <button onClick={stopRecording} className="px-3 py-2 bg-red-600 text-white rounded">Stop Recording</button>
             )}
-            <button onClick={() => { try { cameraRef.current?.stop(); } catch {} startCamera(); }} className="px-3 py-2 bg-gray-200 rounded">Restart Camera</button>
+            <button onClick={async () => { try { await stopCamera(); } catch {} await startCamera(); }} className="px-3 py-2 bg-gray-200 rounded">Restart Camera</button>
             <button onClick={() => { if (downloadVideoUrl) download(downloadVideoUrl, `${exercise}_session.webm`); if (downloadJsonUrl) download(downloadJsonUrl, `${exercise}_landmarks.json`); }} className="px-3 py-2 bg-blue-600 text-white rounded">Download Last Files</button>
-            <button onClick={() => { setFrames([]); setDownloadJsonUrl(null); setDownloadVideoUrl(null); }} className="px-3 py-2 bg-yellow-400 rounded">Clear</button>
+            <button onClick={() => { setFramesPreview([]); setDownloadJsonUrl(null); setDownloadVideoUrl(null); framesRef.current = []; framesFullRef.current = []; }} className="px-3 py-2 bg-yellow-400 rounded">Clear</button>
           </div>
 
           <div className="mt-2 text-sm text-gray-600">Status: {status}</div>
@@ -363,7 +485,7 @@ export default function SessionRecorder() {
       <div className="mt-6">
         <h3 className="font-semibold">Session preview (first frames)</h3>
         <div className="max-h-48 overflow-auto bg-white p-3 rounded shadow">
-          <pre className="text-xs">{JSON.stringify(frames.slice(0, 40).map(f => ({ t: Math.round(f.t), l0: (f.landmarks && f.landmarks[0] ? {x: f.landmarks[0].x, y: f.landmarks[0].y} : null) })), null, 2)}</pre>
+          <pre className="text-xs">{JSON.stringify(framesPreview.slice(0, 40).map(f => ({ t: Math.round(f.t), l0: (f.landmarks && f.landmarks[0] ? {x: f.landmarks[0].x, y: f.landmarks[0].y} : null) })), null, 2)}</pre>
         </div>
         <div className="mt-3">
           <button onClick={() => navigate("/sessions")} className="text-sm text-blue-600">Open Sessions Library</button>
