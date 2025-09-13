@@ -5,7 +5,6 @@ import {
   listFullSessions,
   getFullSessionById,
   deleteSessionById,
-  deleteAllSessions,
   SessionSummary,
   FullSession,
 } from "../utils/sessionStorage";
@@ -35,11 +34,21 @@ export default function Logs() {
     setSelectedFull(fs || null);
   }
 
-  async function handleDeleteSession(e: React.MouseEvent, id: string) {
-    // prevent the row click event (openSummary) from firing
-    e.stopPropagation();
+  async function deleteSession(id: string) {
     if (!window.confirm("Are you sure you want to delete this session?")) return;
     deleteSessionById(id);
+    // also attempt to delete full session entry if exists
+    try {
+      // import function exists in sessionStorage; we don't import deleteFullSessionById to keep simple
+      const full = getFullSessionById(id);
+      if (full) {
+        // remove the matching full session by re-writing full sessions
+        const updated = listFullSessions().filter((f) => f.id !== id);
+        localStorage.setItem("moodfit_sessions_full", JSON.stringify(updated));
+      }
+    } catch (err) {
+      // ignore
+    }
     if (selected?.id === id) {
       setSelected(null);
       setSelectedFull(null);
@@ -47,32 +56,19 @@ export default function Logs() {
     refresh();
   }
 
-  async function handleDeleteAll() {
-    if (!window.confirm("Delete ALL saved sessions? This cannot be undone.")) return;
+  function formatDate(ts?: number) {
+    if (!ts || Number.isNaN(Number(ts))) return "Unknown time";
     try {
-      deleteAllSessions();
-    } catch (err) {
-      console.warn(err);
+      return new Date(Number(ts)).toLocaleString();
+      // if you want a fixed timezone:  .toLocaleString(undefined, { timeZone: "Asia/Kolkata" })
+    } catch {
+      return "Unknown time";
     }
-    setSelected(null);
-    setSelectedFull(null);
-    refresh();
   }
 
   return (
     <div className="p-6">
-      <div className="flex items-center justify-between mb-4">
-        <h1 className="text-2xl font-bold">Sessions / Logs</h1>
-        <div>
-          <button
-            onClick={handleDeleteAll}
-            className="px-3 py-1 text-sm bg-red-600 text-white rounded"
-          >
-            Delete All
-          </button>
-        </div>
-      </div>
-
+      <h1 className="text-2xl font-bold mb-4">Sessions / Logs</h1>
       <div className="grid md:grid-cols-3 gap-4">
         <div className="col-span-1">
           <h3 className="font-semibold mb-2">Recent sessions</h3>
@@ -83,18 +79,20 @@ export default function Logs() {
             {summaries.map((s) => (
               <div
                 key={s.id}
-                onClick={() => openSummary(s)}
                 className={`p-3 rounded border cursor-pointer ${
                   selected?.id === s.id ? "bg-blue-50 border-blue-200" : "bg-white"
                 }`}
               >
-                <div className="flex items-center justify-between">
+                <div
+                  className="flex items-center justify-between"
+                  onClick={() => openSummary(s)}
+                >
                   <div>
                     <div className="font-medium">
                       {s.exercise} ({s.mode})
                     </div>
                     <div className="text-xs text-gray-500">
-                      {new Date(s.startTs).toLocaleString()}
+                      {formatDate(s.startTs)}
                     </div>
                   </div>
                   <div className="text-sm text-gray-600">
@@ -104,7 +102,7 @@ export default function Logs() {
                 <div className="flex justify-between items-center mt-2">
                   <div className="text-xs text-gray-500">{s.notes}</div>
                   <button
-                    onClick={(e) => handleDeleteSession(e, s.id)}
+                    onClick={() => deleteSession(s.id)}
                     className="text-xs text-red-600 hover:underline"
                   >
                     Delete
@@ -123,7 +121,7 @@ export default function Logs() {
                   {selected.exercise} — {selected.mode}
                 </h2>
                 <div className="text-sm text-gray-500">
-                  Recorded at {new Date(selected.startTs).toLocaleString()}
+                  Recorded at {formatDate(selected.startTs)}
                 </div>
               </div>
 
@@ -133,7 +131,8 @@ export default function Logs() {
                 <div className="bg-white p-4 rounded shadow">
                   <div className="text-sm text-gray-500">
                     Full session data not available for this entry. Make sure
-                    SessionRecorder calls <code>saveFullSession(session)</code>.
+                    <code className="mx-1">SessionRecorder</code> calls{" "}
+                    <code className="mx-1">saveFullSession(session)</code> when recording stops.
                   </div>
                 </div>
               )}

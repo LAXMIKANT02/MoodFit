@@ -13,15 +13,9 @@ function uid() {
 
 type FrameRecord = { t: number; landmarks: any[] };
 
-/* -------------------------
-   Safety / performance constants
-   ------------------------- */
-const MAX_IN_MEMORY_FRAMES = 2000; // preview buffer cap
-const SAVE_DOWNSAMPLE_FACTOR = 1; // set >1 to downsample frames before saving to localStorage
+const MAX_IN_MEMORY_FRAMES = 2000;
+const SAVE_DOWNSAMPLE_FACTOR = 1;
 
-/* -------------------------
-   DEMO map (YouTube or local fallback)
-   ------------------------- */
 const DEMO_MAP: Record<string, Record<string, string | undefined>> = {
   exercise: {
     squat: "https://www.youtube.com/watch?v=aclHkVaku9U",
@@ -65,20 +59,14 @@ export default function SessionRecorder() {
   const poseRef = useRef<Pose | null>(null);
   const cameraRef = useRef<Camera | null>(null);
 
-  // guard to prevent concurrent camera starts
-  const isStartingCamera = useRef(false);
-
   const recorderRef = useRef<MediaRecorder | null>(null);
   const chunksRef = useRef<Blob[]>([]);
 
-  // preview buffer (bounded)
   const framesRef = useRef<FrameRecord[]>([]);
-  // full buffer (to save/download) - may be large
   const framesFullRef = useRef<FrameRecord[]>([]);
 
   const [recording, setRecording] = useState(false);
   const [framesPreview, setFramesPreview] = useState<FrameRecord[]>([]);
-  // NOTE: use epoch ms for startTs so new Date(startTs) is correct in Logs
   const [startTs, setStartTs] = useState<number | null>(null);
   const [status, setStatus] = useState("Ready");
   const [downloadVideoUrl, setDownloadVideoUrl] = useState<string | null>(null);
@@ -88,16 +76,9 @@ export default function SessionRecorder() {
   const [demoFailed, setDemoFailed] = useState(false);
   useEffect(() => setDemoFailed(false), [demoUrl]);
 
-  // music player defaults
   const musicRef = useRef<MusicPlayerHandle | null>(null);
-  const exercisePlaylist = [
-    `/music/exercise/track1.mp3`,
-    `/music/exercise/track2.mp3`,
-  ];
-  const yogaPlaylist = [
-    `/music/yoga/track1.mp3`,
-    `/music/yoga/track2.mp3`,
-  ];
+  const exercisePlaylist = [`/music/exercise/track1.mp3`, `/music/exercise/track2.mp3`];
+  const yogaPlaylist = [`/music/yoga/track1.mp3`, `/music/yoga/track2.mp3`];
   const playlist = mode === "yoga" ? yogaPlaylist : exercisePlaylist;
 
   function updateCanvasSizeFromVideo() {
@@ -111,7 +92,6 @@ export default function SessionRecorder() {
     setCanvasSize({ width: w, height: h });
   }
 
-  // stop camera and release tracks
   async function stopCamera() {
     try {
       if (cameraRef.current) {
@@ -129,52 +109,25 @@ export default function SessionRecorder() {
     } catch (_) {}
   }
 
-  // robust startCamera: stops previous stream, handles play() AbortError races
+  const isStartingCamera = useRef(false);
   async function startCamera() {
     if (isStartingCamera.current) return;
     isStartingCamera.current = true;
     setStatus("Requesting camera...");
-    if (!videoRef.current || !canvasRef.current) {
-      isStartingCamera.current = false;
-      return;
-    }
-
+    if (!videoRef.current || !canvasRef.current) { isStartingCamera.current = false; return; }
     try {
-      // stop any existing
       await stopCamera();
-      await new Promise((r) => setTimeout(r, 50)); // tiny yield for browser to release
-
+      await new Promise(res => setTimeout(res, 50));
       const constraints = { video: { width: 640, height: 480 }, audio: false };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-
-      if (!videoRef.current) {
-        stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} });
-        isStartingCamera.current = false;
-        return;
-      }
-
+      if (!videoRef.current) { stream.getTracks().forEach(t => { try { t.stop(); } catch (_) {} }); isStartingCamera.current = false; return; }
       videoRef.current.srcObject = stream;
       videoRef.current.muted = true;
       videoRef.current.playsInline = true;
-
-      try {
-        await videoRef.current.play();
-      } catch (err: any) {
-        // benign race - play was interrupted by another load — ignore
-        if (err && err.name === "AbortError") {
-          console.warn("[camera] play() interrupted (ignored)", err);
-        } else {
-          throw err;
-        }
-      }
-
+      try { await videoRef.current.play(); } catch (err) { /* play interrupted sometimes - proceed */ }
       updateCanvasSizeFromVideo();
-
-      // start mediapipe camera helper
       cameraRef.current = new Camera(videoRef.current, {
-        onFrame: async () => {
-          if (poseRef.current && videoRef.current) await poseRef.current.send({ image: videoRef.current! });
-        },
+        onFrame: async () => { if (poseRef.current && videoRef.current) await poseRef.current.send({ image: videoRef.current! }); },
         width: canvasSize.width,
         height: canvasSize.height,
       });
@@ -189,19 +142,11 @@ export default function SessionRecorder() {
   }
 
   useEffect(() => {
-    // initialize MediaPipe Pose once
     if (!poseRef.current) {
-      poseRef.current = new Pose({
-        locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}`,
-      });
+      poseRef.current = new Pose({ locateFile: (file) => `https://cdn.jsdelivr.net/npm/@mediapipe/pose/${file}` });
     }
     const pose = poseRef.current;
-    pose.setOptions({
-      modelComplexity: 1,
-      smoothLandmarks: true,
-      minDetectionConfidence: 0.5,
-      minTrackingConfidence: 0.5,
-    });
+    pose.setOptions({ modelComplexity: 1, smoothLandmarks: true, minDetectionConfidence: 0.5, minTrackingConfidence: 0.5 });
 
     pose.onResults((results: any) => {
       const canvas = canvasRef.current;
@@ -217,16 +162,11 @@ export default function SessionRecorder() {
         try {
           drawConnectors(ctx, results.poseLandmarks, POSE_CONNECTIONS, { color: "#00FF00", lineWidth: 2 });
           drawLandmarks(ctx, results.poseLandmarks, { color: "#FF0000", lineWidth: 1 });
-        } catch (e) { /* ignore drawing errors */ }
-
+        } catch (_) {}
         if (recording && startTs) {
-          // use wall-clock relative ms (Date.now() - startTs) so saved startTs is correct time
           const now = Date.now();
           const rec: FrameRecord = { t: now - startTs, landmarks: results.poseLandmarks };
-
           framesFullRef.current.push(rec);
-
-          // preview buffer bounded for UI performance
           framesRef.current.push(rec);
           if (framesRef.current.length > MAX_IN_MEMORY_FRAMES) {
             framesRef.current.splice(0, framesRef.current.length - MAX_IN_MEMORY_FRAMES);
@@ -235,38 +175,26 @@ export default function SessionRecorder() {
       }
     });
 
-    return () => {
-      try { (poseRef.current as any)?.close?.(); } catch (_) {}
-      poseRef.current = null;
-    };
+    return () => { try { (poseRef.current as any)?.close?.(); } catch (_) {} ; poseRef.current = null; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [recording, startTs]);
 
-  useEffect(() => {
-    // auto-start camera on mount
-    startCamera();
-    return () => {
-      try { stopCamera(); } catch (_) {}
-    };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+  useEffect(() => { startCamera(); return () => { try { stopCamera(); } catch (_) {} }; }, []);
 
   function startRecording() {
     if (!canvasRef.current) return;
-
-    // reset buffers
     framesRef.current = [];
     framesFullRef.current = [];
     setFramesPreview([]);
     setStatus("Recording...");
     setRecording(true);
 
-    // set startTs as epoch ms (so toLocaleString shows correct wall time)
+    // key fix: use Date.now() for startTs (epoch ms)
     const start = Date.now();
     setStartTs(start);
 
     const stream = (canvasRef.current as HTMLCanvasElement).captureStream(30);
-    let options: any = { mimeType: "video/webm;codecs=vp9" };
+    let options = { mimeType: "video/webm;codecs=vp9" } as any;
     if (!MediaRecorder.isTypeSupported(options.mimeType)) {
       options = { mimeType: "video/webm;codecs=vp8" };
       if (!MediaRecorder.isTypeSupported(options.mimeType)) options = { mimeType: "video/webm" };
@@ -275,13 +203,11 @@ export default function SessionRecorder() {
     const mr = new MediaRecorder(stream, options);
     chunksRef.current = [];
     mr.ondataavailable = (ev) => { if (ev.data && ev.data.size) chunksRef.current.push(ev.data); };
-
     mr.onstop = () => {
       const blob = new Blob(chunksRef.current, { type: "video/webm" });
-      const videoUrl = URL.createObjectURL(blob);
-      setDownloadVideoUrl(videoUrl);
+      const url = URL.createObjectURL(blob);
+      setDownloadVideoUrl(url);
 
-      // prepare frames to save (downsample if desired)
       const fullFrames = framesFullRef.current || [];
       let framesToSave = fullFrames;
       if (SAVE_DOWNSAMPLE_FACTOR > 1 && fullFrames.length > 0) {
@@ -289,82 +215,48 @@ export default function SessionRecorder() {
       }
 
       const normalizedExercise = (exercise || "").toLowerCase().trim();
+      const endTs = Date.now();
+      const durationMs = Math.round(endTs - (start || endTs));
 
-      const session = {
+      const session: FullSession = {
         id: uid(),
         mode,
         exercise: normalizedExercise,
-        startTs,
-        endTs: Date.now(),
-        durationMs: Math.round((Date.now()) - (startTs || Date.now())),
+        startTs: start || Date.now(),
+        endTs,
+        durationMs,
         frames: framesToSave,
+        meta: {},
       };
 
-      // try to save full session to localStorage; fallback to download if fails
-      let savedToLocalStorage = false;
-      try {
-        saveFullSession(session);
-        savedToLocalStorage = true;
-        console.debug("[recorder] saveFullSession succeeded", session.id, "framesSaved:", framesToSave.length);
-      } catch (err) {
-        console.warn("[recorder] saveFullSession failed (localStorage?), falling back to JSON download. error:", err);
-      }
+      try { saveFullSession(session); } catch (err) { console.warn("saveFullSession failed", err); }
 
-      // always prepare downloadable JSON (useful even if saved)
-      try {
-        const jsonBlob = new Blob([JSON.stringify(session)], { type: "application/json" });
-        const jsonUrl = URL.createObjectURL(jsonBlob);
-        setDownloadJsonUrl(jsonUrl);
-      } catch (err) {
-        console.error("[recorder] building session JSON failed:", err);
-      }
+      const jsonBlob = new Blob([JSON.stringify(session)], { type: "application/json" });
+      const jsonUrl = URL.createObjectURL(jsonBlob);
+      setDownloadJsonUrl(jsonUrl);
 
-      // fallback: if localStorage saving failed, auto-trigger JSON download so user doesn't lose data
-      if (!savedToLocalStorage) {
-        try {
-          const a = document.createElement("a");
-          a.href = URL.createObjectURL(new Blob([JSON.stringify(session)], { type: "application/json" }));
-          a.download = `${normalizedExercise || "session"}_${session.id}_landmarks.json`;
-          document.body.appendChild(a);
-          a.click();
-          a.remove();
-          console.warn("[recorder] localStorage unavailable — attempted automatic download of session JSON.");
-        } catch (err) {
-          console.error("[recorder] fallback download failed:", err);
-        }
-      }
-
-      // always save a lightweight summary used by Logs
-      try {
-        saveSessionSummary({
-          id: session.id,
-          mode: session.mode as "exercise" | "yoga",
-          exercise: session.exercise,
-          startTs: session.startTs ?? 0,
-          endTs: session.endTs,
-          durationMs: session.durationMs,
-          reps: 0,
-          notes: musicEnabled ? "Recorded with music" : "Recorded without music",
-          videoUrl,
-          meta: { savedToLocalStorage },
-        });
-      } catch (err) {
-        console.warn("[recorder] saveSessionSummary failed:", err);
-      }
+      saveSessionSummary({
+        id: session.id,
+        mode: session.mode as "exercise" | "yoga",
+        exercise: session.exercise,
+        startTs: session.startTs,
+        endTs: session.endTs,
+        durationMs: session.durationMs,
+        reps: 0,
+        notes: musicEnabled ? "Recorded with music" : "Recorded without music",
+        videoUrl: url,
+        meta: {},
+      });
 
       setStatus("Recording saved locally (download ready)");
       setRecording(false);
-
-      // update UI preview with bounded frames
       setFramesPreview(framesRef.current.slice(0, 500));
-
-      console.debug("[recorder] onstop complete — session id:", session.id, "framesToSave:", framesToSave.length);
+      console.debug("[recorder] saved session", session.id, "framesSaved:", session.frames.length);
     };
 
     mr.start();
     recorderRef.current = mr;
 
-    // optionally attempt to autoplay music (may be blocked by browser)
     if (musicEnabled && musicRef.current && !musicRef.current.isPlaying()) {
       try { musicRef.current.play(); } catch (_) {}
     }
@@ -404,7 +296,6 @@ export default function SessionRecorder() {
         />
       );
     }
-
     return demoFailed ? (
       <div className="w-full h-full flex items-center justify-center text-center p-6">
         <div>
@@ -413,18 +304,12 @@ export default function SessionRecorder() {
         </div>
       </div>
     ) : (
-      <video
-        ref={videoDemoRef}
-        src={demoUrl}
-        controls
-        className="w-full h-full object-cover"
+      <video ref={videoDemoRef} src={demoUrl} controls className="w-full h-full object-cover"
         style={{ width: canvasSize.width, height: canvasSize.height, maxWidth: "100%" }}
-        onError={() => setDemoFailed(true)}
-      />
+        onError={() => { setDemoFailed(true); }} />
     );
   };
 
-  // cleanup object URLs on unmount to avoid leaking memory
   useEffect(() => {
     return () => {
       try {
@@ -443,7 +328,6 @@ export default function SessionRecorder() {
       <div className="grid md:grid-cols-2 gap-4 items-start">
         <div>
           <h2 className="font-semibold mb-2">Demo</h2>
-
           <div className="bg-gray-900 rounded overflow-hidden flex items-center justify-center shadow" style={{ width: canvasSize.width, height: canvasSize.height, maxWidth: "100%" }}>
             {renderDemoArea()}
           </div>
@@ -454,9 +338,7 @@ export default function SessionRecorder() {
           <div className="relative bg-black rounded overflow-hidden" style={{ width: canvasSize.width, height: canvasSize.height, maxWidth: "100%" }}>
             <video ref={videoRef} className="hidden" playsInline />
             <canvas ref={canvasRef} className="rounded-lg shadow" style={{ width: "100%", height: "100%" }} />
-            <div className="absolute top-2 left-2 bg-black bg-opacity-40 text-white text-xs px-2 py-1 rounded">
-              Frames (preview): {framesRef.current.length}
-            </div>
+            <div className="absolute top-2 left-2 bg-black bg-opacity-40 text-white text-xs px-2 py-1 rounded">Frames (preview): {framesRef.current.length}</div>
           </div>
 
           {musicEnabled && (
