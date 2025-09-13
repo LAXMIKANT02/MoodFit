@@ -10,7 +10,6 @@ const Navbar: React.FC = () => {
     { name: "Home", path: "/", icon: <Home size={18} /> },
     { name: "Dashboard", path: "/dashboard", icon: <BarChart2 size={18} /> },
     { name: "Logs", path: "/logs", icon: <BookOpen size={18} /> },
-    { name: "Settings", path: "/settings", icon: <Settings size={18} /> },
   ];
 
   return (

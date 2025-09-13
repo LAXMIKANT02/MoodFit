@@ -4,8 +4,13 @@ import { useParams, Link, useNavigate, useSearchParams } from "react-router-dom"
 import { Pose, POSE_CONNECTIONS } from "@mediapipe/pose";
 import { Camera } from "@mediapipe/camera_utils";
 import { drawConnectors, drawLandmarks } from "@mediapipe/drawing_utils";
-import { saveSessionSummary, saveFullSession } from "../utils/sessionStorage";
+import { saveSessionSummary, saveFullSession, FullSession } from "../utils/sessionStorage";
 import MusicPlayer, { MusicPlayerHandle } from "../components/MusicPlayer";
+
+// Optional helper to upload session JSON (and store in Supabase Storage + DB).
+// If you don't have this file yet, create it as discussed earlier. Importing is safe:
+// we call it inside a try/catch so nothing breaks if it's missing or throws.
+//import { uploadSessionToSupabase } from "../lib/sessionStorageSupabase"; // <-- optional; ensure this path exists if you want uploads
 
 function uid() {
   return `${Date.now()}-${Math.random().toString(16).slice(2, 10)}`;
@@ -229,6 +234,7 @@ export default function SessionRecorder() {
         meta: {},
       };
 
+      // Save full session locally (unchanged logic)
       try { saveFullSession(session); } catch (err) { console.warn("saveFullSession failed", err); }
 
       const jsonBlob = new Blob([JSON.stringify(session)], { type: "application/json" });
@@ -252,6 +258,35 @@ export default function SessionRecorder() {
       setRecording(false);
       setFramesPreview(framesRef.current.slice(0, 500));
       console.debug("[recorder] saved session", session.id, "framesSaved:", session.frames.length);
+
+      // --- Optional: upload to Supabase (non-blocking, safe) ---
+      // If you want to upload sessions to Supabase Storage + DB, implement uploadSessionToSupabase(session, opts)
+      // in src/lib/sessionStorageSupabase.ts and export it. If it's missing, the call below will fail gracefully.
+      (async () => {
+        try {
+          // indicate upload started
+          setStatus("Uploading session to server...");
+          if (typeof uploadSessionToSupabase === "function") {
+            // compress option assumed by helper; adapt as needed
+            const res = await uploadSessionToSupabase(session, { compress: true });
+            // res should describe DB rows + storage path; show brief confirmation
+            console.info("[recorder] uploaded session to Supabase:", res);
+            setStatus("Uploaded session to server");
+          } else {
+            // helper not available — skip silently but set status
+            console.warn("[recorder] uploadSessionToSupabase function missing; skipping upload.");
+            setStatus("Saved locally (server upload skipped)");
+          }
+        } catch (err) {
+          console.error("[recorder] upload to Supabase failed:", err);
+          setStatus("Saved locally (upload failed)");
+        } finally {
+          // leave user with final saved state visible
+          setTimeout(() => {
+            if (!recording) setStatus("Ready");
+          }, 800);
+        }
+      })();
     };
 
     mr.start();
