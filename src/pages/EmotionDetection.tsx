@@ -1,14 +1,37 @@
 import React, { useEffect, useRef, useState } from "react";
-import * as faceapi from "face-api.js";
+// Import TFJS first and expose it to window so face-api uses the same runtime
+import * as tf from "@tensorflow/tfjs";
+(window as any).tf = tf;
+
+// Use the maintained fork that is compatible with modern TFJS (v4+)
+import * as faceapi from "@vladmandic/face-api";
+
+// Try to pick a good backend early
+(async () => {
+  try {
+    // prefer webgl, then wasm if available
+    if (tf.findBackend && tf.findBackend("webgl")) {
+      await tf.setBackend("webgl");
+    } else if (tf.findBackend && tf.findBackend("wasm")) {
+      await tf.setBackend("wasm");
+    }
+    await tf.ready();
+    // eslint-disable-next-line no-console
+    console.info("[Emotion] tf ready — backend:", tf.getBackend ? tf.getBackend() : "unknown");
+  } catch (e) {
+    // eslint-disable-next-line no-console
+    console.warn("[Emotion] tf backend init error:", e);
+  }
+})();
 
 /**
  * EmotionDetection.tsx
  * - Shows the VIDEO (visible) and hides the canvas (used only for background detection)
- * - Uses face-api.js CDN models by default
+ * - Uses face-api.js models by default (MODEL_PATH)
  * - Displays detected emotion as emoji + label + confidence
  */
 
-const MODEL_PATH = "https://justadudewhohacks.github.io/face-api.js/models"; // CDN path (no local files required)
+const MODEL_PATH = "https://justadudewhohacks.github.io/face-api.js/models";
 const DETECT_INTERVAL_MS = 150; // ~6-7 FPS background detection
 
 export default function EmotionDetection(): JSX.Element {
@@ -30,19 +53,25 @@ export default function EmotionDetection(): JSX.Element {
       try {
         setStatus("Loading face-api models...");
         await faceapi.nets.tinyFaceDetector.loadFromUri(MODEL_PATH);
+        console.info("[Emotion] tinyFaceDetector loaded");
         await faceapi.nets.faceLandmark68TinyNet.loadFromUri(MODEL_PATH);
+        console.info("[Emotion] faceLandmark68TinyNet loaded");
         await faceapi.nets.faceExpressionNet.loadFromUri(MODEL_PATH);
+        console.info("[Emotion] faceExpressionNet loaded");
+
         if (!mounted) return;
         setModelsLoaded(true);
         setStatus("Models loaded. Click Start.");
         console.info("[Emotion] Models loaded");
       } catch (err) {
-        console.error("[Emotion] Model load failed:", err);
+        console.error("[Emotion] Model load failed (detailed):", err);
         setLastError(String(err));
         setStatus("Model load failed. See console.");
       }
     })();
-    return () => { mounted = false; };
+    return () => {
+      mounted = false;
+    };
   }, []);
 
   // Start / stop camera & detection
@@ -57,7 +86,10 @@ export default function EmotionDetection(): JSX.Element {
       setLastError(null);
       try {
         setStatus("Requesting camera permission...");
-        stream = await navigator.mediaDevices.getUserMedia({ video: { facingMode: "user", width: 640, height: 480 }, audio: false });
+        stream = await navigator.mediaDevices.getUserMedia({
+          video: { facingMode: "user", width: 640, height: 480 },
+          audio: false,
+        });
         if (!videoRef.current) throw new Error("video element missing");
 
         videoRef.current.srcObject = stream;
@@ -69,9 +101,11 @@ export default function EmotionDetection(): JSX.Element {
           try {
             // ensure hidden canvas size matches video
             const video = videoRef.current!;
-            const canvas = canvasRef.current!;
-            canvas.width = video.videoWidth || 640;
-            canvas.height = video.videoHeight || 480;
+            const canvas = canvasRef.current;
+            if (canvas) {
+              canvas.width = video.videoWidth || 640;
+              canvas.height = video.videoHeight || 480;
+            }
             setStatus("Camera ready — running background detection");
             startBackgroundDetection();
           } catch (e) {
@@ -79,9 +113,13 @@ export default function EmotionDetection(): JSX.Element {
           }
         };
 
-        videoRef.current.addEventListener("loadeddata", onLoaded, { once: true });
-        try { await videoRef.current.play(); } catch (e) { console.warn("[Emotion] video.play() blocked:", e); }
-
+        // use loadedmetadata which is more appropriate for width/height availability
+        videoRef.current.addEventListener("loadedmetadata", onLoaded, { once: true });
+        try {
+          await videoRef.current.play();
+        } catch (e) {
+          console.warn("[Emotion] video.play() blocked:", e);
+        }
       } catch (err) {
         console.error("[Emotion] Camera start error:", err);
         setLastError(String(err));
@@ -98,13 +136,20 @@ export default function EmotionDetection(): JSX.Element {
       }
       // stop and remove stream
       if (stream) {
-        try { stream.getTracks().forEach(t => t.stop()); } catch {}
+        try {
+          stream.getTracks().forEach((t) => t.stop());
+        } catch {}
         stream = null;
       }
       // clear video src and pause
       if (videoRef.current) {
-        try { videoRef.current.pause(); } catch {}
-        try { videoRef.current.srcObject = null; } catch {}
+        try {
+          videoRef.current.pause();
+        } catch {}
+        try {
+          // @ts-ignore
+          videoRef.current.srcObject = null;
+        } catch {}
       }
       setDominant(null);
       setStatus("Stopped");
@@ -150,7 +195,10 @@ export default function EmotionDetection(): JSX.Element {
 
       try {
         // perform detection on the video element
-        const results = await faceapi.detectAllFaces(video, options).withFaceLandmarks(true).withFaceExpressions();
+        const results = await faceapi
+          .detectAllFaces(video, options)
+          .withFaceLandmarks(true)
+          .withFaceExpressions();
 
         // If debug canvas visible, draw simple overlays; else keep hidden.
         if (showDebugCanvas) {
@@ -172,7 +220,7 @@ export default function EmotionDetection(): JSX.Element {
 
         // take the first detected face
         const r = results[0];
-        const expressions = r.expressions;
+        const expressions = r.expressions || {};
         // pick dominant expression by score
         const entries = Object.entries(expressions) as [string, number][];
         entries.sort((a, b) => b[1] - a[1]);
@@ -210,20 +258,37 @@ export default function EmotionDetection(): JSX.Element {
       } catch (err) {
         console.warn("[Emotion] detection error:", err);
         setLastError(String(err));
+        // If this is the makeTensor / runtime mismatch, stop interval to avoid console spam
+        const s = String(err || "");
+        if (s.includes("makeTensor") || s.includes("Lt2.makeTensor")) {
+          if (intervalRef.current) {
+            window.clearInterval(intervalRef.current);
+            intervalRef.current = null;
+          }
+          setStatus("Tensor runtime error — check TFJS/face-api versions (see console).");
+        }
       }
     }, DETECT_INTERVAL_MS);
   }
 
   function expressionToEmoji(label: string) {
     switch (label) {
-      case "happy": return "😄";
-      case "sad": return "😢";
-      case "angry": return "😠";
-      case "surprised": return "😲";
-      case "fearful": return "😨";
-      case "disgusted": return "🤢";
-      case "neutral": return "😐";
-      default: return "🙂";
+      case "happy":
+        return "😄";
+      case "sad":
+        return "😢";
+      case "angry":
+        return "😠";
+      case "surprised":
+        return "😲";
+      case "fearful":
+        return "😨";
+      case "disgusted":
+        return "🤢";
+      case "neutral":
+        return "😐";
+      default:
+        return "🙂";
     }
   }
 
@@ -271,17 +336,10 @@ export default function EmotionDetection(): JSX.Element {
               >
                 Start
               </button>
-              <button
-                onClick={() => setRunning(false)}
-                disabled={!running}
-                className="px-4 py-2 bg-gray-600 text-white rounded"
-              >
+              <button onClick={() => setRunning(false)} disabled={!running} className="px-4 py-2 bg-gray-600 text-white rounded">
                 Stop
               </button>
-              <button
-                onClick={() => setShowDebugCanvas((s) => !s)}
-                className="px-3 py-2 bg-indigo-600 text-white rounded"
-              >
+              <button onClick={() => setShowDebugCanvas((s) => !s)} className="px-3 py-2 bg-indigo-600 text-white rounded">
                 {showDebugCanvas ? "Hide Debug" : "Show Debug"}
               </button>
             </div>
